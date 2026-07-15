@@ -2,11 +2,14 @@ import shap
 import numpy as np
 import pandas as pd
 
-def get_explainer(model, X_train):
+def get_explainer(model, X_train=None):
     """
     Initializes a SHAP TreeExplainer for the given XGBoost model.
     """
-    explainer = shap.TreeExplainer(model, X_train)
+    # FIX: Explicitly set feature_perturbation to "tree_path_dependent".
+    # This prevents SHAP from attempting to process categorical splits
+    # that newer versions of XGBoost introduced.
+    explainer = shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
     return explainer
 
 def explain_alert(shap_values, feature_names):

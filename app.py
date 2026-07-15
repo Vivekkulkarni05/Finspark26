@@ -6,11 +6,11 @@ from streamlit_agraph import agraph, Node, Edge, Config
 
 import time
 import networkx.algorithms.community as nx_comm
+import os
 
 import model_trainer
 import explainability
 import quantum_scorer
-import os
 
 st.set_page_config(page_title="QuantumGuard", layout="wide")
 
@@ -103,13 +103,6 @@ for i, comm in enumerate(communities):
 df_active['high_confidence_alert'] = df_active['xgboost_flag'] & (df_active['hub_node_flag'] | (df_active['quantum_score'] > 30))
 
 df = df_active # Update df reference for rest of the UI
-
-# Feedback loop tracking
-if 'false_positives' not in st.session_state:
-    if os.path.exists('fp_feedback.csv'):
-        st.session_state.false_positives = pd.read_csv('fp_feedback.csv')['event_id_x'].tolist()
-    else:
-        st.session_state.false_positives = []
 
 def mark_fp(event_id):
     if event_id not in st.session_state.false_positives:

@@ -101,7 +101,6 @@ def generate_data(num_records=2000):
     df_net = pd.DataFrame(net_data)
 
     # --- Scenario 1: Account Takeover ---
-    # Failed login, then successful login (network events), followed by a high-value transaction on a new device/IP.
     ato_user = users[0]
     ato_acc = accounts[0]
     ato_time = start_time + datetime.timedelta(days=1)
@@ -129,7 +128,6 @@ def generate_data(num_records=2000):
     }])], ignore_index=True)
 
     # --- Scenario 2: Fraud Ring ---
-    # 1 device_id linked to 5+ distinct account_ids transacting in a burst.
     ring_device = "DEV-RINGMASTER"
     ring_ip = "203.0.113.55"
     ring_time = start_time + datetime.timedelta(days=2)
@@ -151,8 +149,6 @@ def generate_data(num_records=2000):
         }])], ignore_index=True)
 
     # --- Scenario 3: Quantum-exposure case ---
-    # Large one-way encrypted data transfer using TLS <1.2 or RSA/ECC without PFS, 
-    # no corresponding user activity afterward, paired with an unrelated small "cover" transaction.
     q_user = users[20]
     q_acc = accounts[20]
     q_device = devices[20]
@@ -178,13 +174,8 @@ def join_datasets(df_tx, df_net, window_minutes=15):
     """
     Join transaction and network events based on shared IDs (user, device, IP) within a time window.
     """
-    # Sort by timestamp
     df_tx = df_tx.sort_values('timestamp')
     df_net = df_net.sort_values('timestamp')
-    
-    # We want a unified event table. One approach:
-    # Merge on (user_id, device_id, ip).
-    # pandas merge_asof is perfect for joining nearest timestamp.
     
     merged = pd.merge_asof(
         df_tx, df_net,
@@ -194,18 +185,15 @@ def join_datasets(df_tx, df_net, window_minutes=15):
         tolerance=pd.Timedelta(minutes=window_minutes)
     )
     
-    # Fill NAs
     merged['tls_version'] = merged['tls_version'].fillna('Unknown')
     merged['cipher_suite'] = merged['cipher_suite'].fillna('Unknown')
     merged['bytes_sent'] = merged['bytes_sent'].fillna(0)
     merged['bytes_received'] = merged['bytes_received'].fillna(0)
     merged['label'] = merged['label'].fillna('Unknown')
     
-    # Determine overall fraud (if either was labeled fraud)
     merged['isFraud'] = merged['isFraud_x'] | merged['isFraud_y'].fillna(0).astype(int)
     merged.drop(['isFraud_x', 'isFraud_y'], axis=1, inplace=True)
     
-    # Calculate User Transaction/Activity Velocity (Events in the last 1 hour)
     merged = merged.sort_values('timestamp').reset_index(drop=True)
     
     velocity = []
@@ -213,7 +201,6 @@ def join_datasets(df_tx, df_net, window_minutes=15):
         row = merged.iloc[i]
         user = row['user_id']
         ts = row['timestamp']
-        # Count events for this user in the last 1 hour up to the current timestamp
         count = ((merged['user_id'] == user) & (merged['timestamp'] <= ts) & (merged['timestamp'] >= ts - pd.Timedelta(hours=1))).sum()
         velocity.append(count)
     merged['user_tx_velocity'] = velocity
@@ -229,7 +216,6 @@ if __name__ == "__main__":
     joined_df = join_datasets(df_tx, df_net, window_minutes=15)
     print(f"Joined table shape: {joined_df.shape}")
     
-    # Check scenarios
     print("\nScenario Verification:")
     print("ATO Transactions:", joined_df[joined_df['event_id_x'] == 'TX-ATO-HIGH'][['event_id_x', 'event_id_y', 'isFraud']])
     print("Fraud Ring Transactions:", joined_df[joined_df['event_id_x'].str.startswith('TX-RING')][['event_id_x', 'event_id_y', 'isFraud']])

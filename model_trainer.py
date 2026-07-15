@@ -39,7 +39,6 @@ def train_model(X, y):
         max_depth=4,
         learning_rate=0.1,
         random_state=42,
-        use_label_encoder=False,
         eval_metric='logloss'
     )
     

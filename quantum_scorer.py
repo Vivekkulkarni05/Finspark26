@@ -10,7 +10,7 @@ def score_quantum_exposure(row):
     # 1. TLS Version < 1.2
     tls_version = str(row.get('tls_version', 'None'))
     if tls_version in ['TLSv1.0', 'TLSv1.1', 'SSLv3', 'None', 'nan']:
-        if str(row.get('protocol', 'TCP')) in ['TCP', 'HTTP']: # Don't heavily penalize UDP unless we know more
+        if str(row.get('protocol', 'TCP')) in ['TCP', 'HTTP']: 
             score += 30
             breakdown.append("Weak or no TLS (TLS < 1.2): +30")
     
@@ -26,14 +26,11 @@ def score_quantum_exposure(row):
     bytes_sent = row.get('bytes_sent', 0)
     bytes_received = row.get('bytes_received', 0)
     
-    # If sent is huge and received is tiny
     if bytes_sent > 1000000 and bytes_received < 10000:
         score += 35
         breakdown.append("Large asymmetric data transfer (exfil pattern): +35")
         
     # 4. No follow-up user session activity within 24h
-    # In a live system, we'd check state. For this prototype, we'll proxy it by the label
-    # or just assume a base penalty if it's the quantum exfil scenario
     event_id = row.get('event_id_y', '')
     if event_id == 'NET-QEXFIL':
         score += 10
