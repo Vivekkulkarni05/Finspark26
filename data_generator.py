@@ -205,6 +205,19 @@ def join_datasets(df_tx, df_net, window_minutes=15):
     merged['isFraud'] = merged['isFraud_x'] | merged['isFraud_y'].fillna(0).astype(int)
     merged.drop(['isFraud_x', 'isFraud_y'], axis=1, inplace=True)
     
+    # Calculate User Transaction/Activity Velocity (Events in the last 1 hour)
+    merged = merged.sort_values('timestamp').reset_index(drop=True)
+    
+    velocity = []
+    for i in range(len(merged)):
+        row = merged.iloc[i]
+        user = row['user_id']
+        ts = row['timestamp']
+        # Count events for this user in the last 1 hour up to the current timestamp
+        count = ((merged['user_id'] == user) & (merged['timestamp'] <= ts) & (merged['timestamp'] >= ts - pd.Timedelta(hours=1))).sum()
+        velocity.append(count)
+    merged['user_tx_velocity'] = velocity
+    
     return merged
 
 if __name__ == "__main__":

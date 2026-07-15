@@ -4,6 +4,9 @@ import numpy as np
 import networkx as nx
 from streamlit_agraph import agraph, Node, Edge, Config
 
+import time
+import networkx.algorithms.community as nx_comm
+
 import model_trainer
 import explainability
 import quantum_scorer
@@ -23,8 +26,9 @@ def load_data():
     return pd.read_csv("joined_data.csv")
 
 @st.cache_resource
-def get_ml_components(df):
-    X, y = model_trainer.prepare_data(df)
+def get_ml_components(df, fp_list):
+    # fp_list is passed to trigger cache invalidation if it changes
+    X, y = model_trainer.prepare_data(df, fp_list)
     model, metrics, X_train, X_test, y_test = model_trainer.train_model(X, y)
     explainer = explainability.get_explainer(model, X_train)
     return model, metrics, explainer, X.columns.tolist(), X
@@ -34,47 +38,81 @@ if df is None:
     st.error("Data not found. Please run data_generator.py first.")
     st.stop()
 
-model, metrics, explainer, feature_names, X = get_ml_components(df)
+# Feedback loop tracking
+if 'false_positives' not in st.session_state:
+    if os.path.exists('fp_feedback.csv'):
+        st.session_state.false_positives = pd.read_csv('fp_feedback.csv')['event_id_x'].tolist()
+    else:
+        st.session_state.false_positives = []
 
-# Prepare alerts
-if 'predictions' not in st.session_state:
-    st.session_state.predictions = pd.DataFrame()
+# Load model (passes tuple of FP to ensure cache updates when FP changes)
+model, metrics, explainer, feature_names, X = get_ml_components(df, tuple(st.session_state.false_positives))
 
-# We score the entire dataframe for visualization
-probs = model.predict_proba(X)[:, 1]
-df['fraud_score'] = probs
-df['xgboost_flag'] = df['fraud_score'] > 0.5
+# Live Streaming Simulation
+if 'live_mode' not in st.session_state:
+    st.session_state.live_mode = False
+if 'stream_index' not in st.session_state:
+    st.session_state.stream_index = 20
 
-# Calculate Quantum Score & Hub Nodes
-if 'processed_alerts' not in st.session_state:
-    quantum_scores = []
-    quantum_breakdowns = []
-    for idx, row in df.iterrows():
-        s, b = quantum_scorer.score_quantum_exposure(row)
-        quantum_scores.append(s)
-        quantum_breakdowns.append(b)
-    
-    df['quantum_score'] = quantum_scores
-    df['quantum_breakdown'] = quantum_breakdowns
-    
-    # Graph Centrality (simplified)
-    G = nx.Graph()
-    for _, row in df.iterrows():
-        user = str(row['user_id'])
-        dev = str(row['device_id'])
-        acc = str(row['account_id'])
-        ip = str(row['ip'])
-        G.add_edges_from([(user, dev), (user, acc), (dev, ip)])
-    
-    degree_dict = dict(G.degree())
-    df['hub_node_flag'] = df['device_id'].map(lambda x: degree_dict.get(str(x), 0) > 5)
-    
-    # Ensemble logic
-    df['high_confidence_alert'] = df['xgboost_flag'] & (df['hub_node_flag'] | (df['quantum_score'] > 30))
-    
-    st.session_state.processed_alerts = df
+st.sidebar.title("Controls")
+live_mode = st.sidebar.checkbox("Live Monitoring Mode", value=st.session_state.live_mode)
+st.session_state.live_mode = live_mode
+
+if st.sidebar.button("Retrain Model with Feedback"):
+    get_ml_components.clear()
+    st.rerun()
+
+if st.session_state.live_mode:
+    st.session_state.stream_index = min(st.session_state.stream_index + 2, len(df))
+    df_active = df.iloc[:st.session_state.stream_index].copy()
+    X_active = X.iloc[:st.session_state.stream_index].copy()
 else:
-    df = st.session_state.processed_alerts
+    df_active = df.copy()
+    X_active = X.copy()
+
+# We score the active dataframe
+probs = model.predict_proba(X_active)[:, 1]
+df_active['fraud_score'] = probs
+df_active['xgboost_flag'] = df_active['fraud_score'] > 0.5
+
+# Calculate Quantum Score & Communities
+quantum_scores = []
+quantum_breakdowns = []
+for idx, row in df_active.iterrows():
+    s, b = quantum_scorer.score_quantum_exposure(row)
+    quantum_scores.append(s)
+    quantum_breakdowns.append(b)
+
+df_active['quantum_score'] = quantum_scores
+df_active['quantum_breakdown'] = quantum_breakdowns
+
+# Graph Community Detection for Fraud Rings
+G = nx.Graph()
+for _, row in df_active.iterrows():
+    user = str(row['user_id'])
+    dev = str(row['device_id'])
+    acc = str(row['account_id'])
+    ip = str(row['ip'])
+    G.add_edges_from([(user, dev), (user, acc), (dev, ip)])
+
+# Find communities
+try:
+    communities = list(nx_comm.greedy_modularity_communities(G))
+except Exception:
+    communities = []
+
+node_community_map = {}
+for i, comm in enumerate(communities):
+    for node in comm:
+        node_community_map[node] = i
+
+# A device is in a suspicious ring if its community has more than 5 interconnected entities
+df_active['hub_node_flag'] = df_active['device_id'].map(lambda x: len(communities[node_community_map.get(str(x), 0)]) > 5 if communities and str(x) in node_community_map else False)
+
+# Ensemble logic
+df_active['high_confidence_alert'] = df_active['xgboost_flag'] & (df_active['hub_node_flag'] | (df_active['quantum_score'] > 30))
+
+df = df_active # Update df reference for rest of the UI
 
 # Feedback loop tracking
 if 'false_positives' not in st.session_state:
@@ -142,23 +180,25 @@ with tab2:
         acc = str(row['account_id'])
         ip = str(row['ip'])
         
-        # Color code nodes based on type
-        G_viz.add_node(user, group="user", title=f"User: {user}")
-        G_viz.add_node(dev, group="device", title=f"Device: {dev}")
-        G_viz.add_node(acc, group="account", title=f"Account: {acc}")
-        G_viz.add_node(ip, group="ip", title=f"IP: {ip}")
+        # Color code nodes based on community to highlight rings
+        G_viz.add_node(user, group="user", title=f"User: {user} | Comm: {node_community_map.get(user, 0)}", community=node_community_map.get(user, 0))
+        G_viz.add_node(dev, group="device", title=f"Device: {dev} | Comm: {node_community_map.get(dev, 0)}", community=node_community_map.get(dev, 0))
+        G_viz.add_node(acc, group="account", title=f"Account: {acc} | Comm: {node_community_map.get(acc, 0)}", community=node_community_map.get(acc, 0))
+        G_viz.add_node(ip, group="ip", title=f"IP: {ip} | Comm: {node_community_map.get(ip, 0)}", community=node_community_map.get(ip, 0))
         
         G_viz.add_edges_from([(user, dev), (user, acc), (dev, ip)])
 
     nodes = []
     edges = []
     
-    # Simple color mapping
-    color_map = {"user": "#3498db", "device": "#e74c3c", "account": "#2ecc71", "ip": "#f1c40f"}
+    # Color mapping based on communities
+    import random
+    random.seed(42)
+    comm_colors = {i: f"#{random.randint(50, 200):02x}{random.randint(50, 200):02x}{random.randint(50, 200):02x}" for i in range(200)}
     
     for node, attrs in G_viz.nodes(data=True):
-        group = attrs.get('group', 'user')
-        nodes.append(Node(id=node, label=node, size=25, color=color_map.get(group)))
+        comm_id = attrs.get('community', 0)
+        nodes.append(Node(id=node, label=node, size=25, color=comm_colors.get(comm_id, "#3498db")))
         
     for source, target in G_viz.edges():
         edges.append(Edge(source=source, target=target))
@@ -191,3 +231,7 @@ with tab4:
         .head(20),
         use_container_width=True
     )
+
+if st.session_state.live_mode and st.session_state.stream_index < len(X):
+    time.sleep(1.5)
+    st.rerun()

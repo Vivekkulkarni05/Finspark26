@@ -4,13 +4,16 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score, confusion_matrix
 import xgboost as xgb
 
-def prepare_data(df):
+def prepare_data(df, false_positives=None):
     """
     Prepares the joined dataframe for modeling by selecting features,
     handling categoricals, and separating the target.
     """
+    if false_positives:
+        df.loc[df['event_id_x'].isin(false_positives), 'isFraud'] = 0
+
     # Select features
-    numeric_features = ['amount', 'oldbalanceOrg', 'newbalanceOrig', 'flow_duration', 'bytes_sent', 'bytes_received']
+    numeric_features = ['amount', 'oldbalanceOrg', 'newbalanceOrig', 'flow_duration', 'bytes_sent', 'bytes_received', 'user_tx_velocity']
     categorical_features = ['type', 'protocol', 'tls_version', 'cipher_suite']
     
     X = df[numeric_features + categorical_features].copy()
