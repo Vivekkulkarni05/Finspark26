@@ -23,7 +23,18 @@ st.markdown("""
 def load_data():
     if not os.path.exists("joined_data.csv"):
         return None
-    return pd.read_csv("joined_data.csv")
+    df = pd.read_csv("joined_data.csv")
+    
+    # Pre-calculate quantum scores for the entire dataset to eliminate lag
+    q_scores = []
+    q_breakdowns = []
+    for idx, row in df.iterrows():
+        s, b = quantum_scorer.score_quantum_exposure(row)
+        q_scores.append(s)
+        q_breakdowns.append(b)
+    df['quantum_score'] = q_scores
+    df['quantum_breakdown'] = q_breakdowns
+    return df
 
 @st.cache_resource
 def get_ml_components(df, fp_list):
@@ -31,7 +42,8 @@ def get_ml_components(df, fp_list):
     X, y = model_trainer.prepare_data(df, fp_list)
     model, metrics, X_train, X_test, y_test = model_trainer.train_model(X, y)
     explainer = explainability.get_explainer(model, X_train)
-    return model, metrics, explainer, X.columns.tolist(), X
+    shap_values_matrix = explainer.shap_values(X)
+    return model, metrics, explainer, shap_values_matrix, X.columns.tolist(), X
 
 df = load_data()
 if df is None:
@@ -46,47 +58,24 @@ if 'false_positives' not in st.session_state:
         st.session_state.false_positives = []
 
 # Load model (passes tuple of FP to ensure cache updates when FP changes)
-model, metrics, explainer, feature_names, X = get_ml_components(df, tuple(st.session_state.false_positives))
-
-# Live Streaming Simulation
-if 'live_mode' not in st.session_state:
-    st.session_state.live_mode = False
-if 'stream_index' not in st.session_state:
-    st.session_state.stream_index = 20
+model, metrics, explainer, shap_values_matrix, feature_names, X = get_ml_components(df, tuple(st.session_state.false_positives))
 
 st.sidebar.title("Controls")
-live_mode = st.sidebar.checkbox("Live Monitoring Mode", value=st.session_state.live_mode)
-st.session_state.live_mode = live_mode
+stream_index = st.sidebar.slider("Simulation Timeline (Events)", min_value=20, max_value=len(df), value=len(df), step=20)
 
 if st.sidebar.button("Retrain Model with Feedback"):
     get_ml_components.clear()
     st.rerun()
 
-if st.session_state.live_mode:
-    st.session_state.stream_index = min(st.session_state.stream_index + 2, len(df))
-    df_active = df.iloc[:st.session_state.stream_index].copy()
-    X_active = X.iloc[:st.session_state.stream_index].copy()
-else:
-    df_active = df.copy()
-    X_active = X.copy()
+df_active = df.iloc[:stream_index].copy()
+X_active = X.iloc[:stream_index].copy()
 
 # We score the active dataframe
 probs = model.predict_proba(X_active)[:, 1]
 df_active['fraud_score'] = probs
 df_active['xgboost_flag'] = df_active['fraud_score'] > 0.5
 
-# Calculate Quantum Score & Communities
-quantum_scores = []
-quantum_breakdowns = []
-for idx, row in df_active.iterrows():
-    s, b = quantum_scorer.score_quantum_exposure(row)
-    quantum_scores.append(s)
-    quantum_breakdowns.append(b)
-
-df_active['quantum_score'] = quantum_scores
-df_active['quantum_breakdown'] = quantum_breakdowns
-
-# Graph Community Detection for Fraud Rings
+# Graph Community Detection & Centrality
 G = nx.Graph()
 for _, row in df_active.iterrows():
     user = str(row['user_id'])
@@ -95,9 +84,13 @@ for _, row in df_active.iterrows():
     ip = str(row['ip'])
     G.add_edges_from([(user, dev), (user, acc), (dev, ip)])
 
-# Find communities
+# A device is in a suspicious ring if it acts as a Hub (high degree)
+degree_dict = dict(G.degree())
+df_active['hub_node_flag'] = df_active['device_id'].map(lambda x: degree_dict.get(str(x), 0) > 5)
+
+# Find communities for coloring (Using connected_components for blazing fast O(V+E) speed)
 try:
-    communities = list(nx_comm.greedy_modularity_communities(G))
+    communities = list(nx.connected_components(G))
 except Exception:
     communities = []
 
@@ -105,9 +98,6 @@ node_community_map = {}
 for i, comm in enumerate(communities):
     for node in comm:
         node_community_map[node] = i
-
-# A device is in a suspicious ring if its community has more than 5 interconnected entities
-df_active['hub_node_flag'] = df_active['device_id'].map(lambda x: len(communities[node_community_map.get(str(x), 0)]) > 5 if communities and str(x) in node_community_map else False)
 
 # Ensemble logic
 df_active['high_confidence_alert'] = df_active['xgboost_flag'] & (df_active['hub_node_flag'] | (df_active['quantum_score'] > 30))
@@ -155,8 +145,9 @@ with tab1:
             # Explainability
             st.write("---")
             st.write("**AI Explanation:**")
-            row_features = X.loc[[idx]]
-            explanation = explainability.explain_alert(explainer, row_features, feature_names)
+            int_pos = X.index.get_loc(idx)
+            row_shap = shap_values_matrix[int_pos]
+            explanation = explainability.explain_alert(row_shap, feature_names)
             st.info(explanation)
             
             if row['hub_node_flag']:
@@ -170,8 +161,12 @@ with tab2:
     
     # Filter for interesting nodes to keep graph manageable
     interesting_alerts = df[(df['hub_node_flag'] == True) | (df['event_id_x'].str.startswith('TX-RING'))]
+    
+    # HARD CLAMP: Prevent browser crash from rendering too many nodes in vis.js
+    interesting_alerts = interesting_alerts.head(30)
+    
     if len(interesting_alerts) == 0:
-        interesting_alerts = df.head(50)
+        interesting_alerts = df.head(30)
         
     G_viz = nx.Graph()
     for _, row in interesting_alerts.iterrows():
@@ -229,9 +224,5 @@ with tab4:
     st.dataframe(
         q_alerts[['event_id_x', 'timestamp', 'user_id', 'quantum_score', 'quantum_breakdown', 'tls_version', 'cipher_suite', 'bytes_sent']]
         .head(20),
-        use_container_width=True
+        width=1200
     )
-
-if st.session_state.live_mode and st.session_state.stream_index < len(X):
-    time.sleep(1.5)
-    st.rerun()
