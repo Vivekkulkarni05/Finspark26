@@ -175,30 +175,56 @@ with tab2:
         acc = str(row['account_id'])
         ip = str(row['ip'])
         
-        # Color code nodes based on community to highlight rings
-        G_viz.add_node(user, group="user", title=f"User: {user} | Comm: {node_community_map.get(user, 0)}", community=node_community_map.get(user, 0))
-        G_viz.add_node(dev, group="device", title=f"Device: {dev} | Comm: {node_community_map.get(dev, 0)}", community=node_community_map.get(dev, 0))
-        G_viz.add_node(acc, group="account", title=f"Account: {acc} | Comm: {node_community_map.get(acc, 0)}", community=node_community_map.get(acc, 0))
-        G_viz.add_node(ip, group="ip", title=f"IP: {ip} | Comm: {node_community_map.get(ip, 0)}", community=node_community_map.get(ip, 0))
+        # Entity Types
+        G_viz.add_node(user, group="user")
+        G_viz.add_node(dev, group="device")
+        G_viz.add_node(acc, group="account")
+        G_viz.add_node(ip, group="ip")
         
         G_viz.add_edges_from([(user, dev), (user, acc), (dev, ip)])
 
     nodes = []
     edges = []
     
-    # Color mapping based on communities
-    import random
-    random.seed(42)
-    comm_colors = {i: f"#{random.randint(50, 200):02x}{random.randint(50, 200):02x}{random.randint(50, 200):02x}" for i in range(200)}
+    # Premium Neon Cyberpunk Palette
+    color_map = {
+        "user": {"background": "#00E5FF", "border": "#008B99"},      # Neon Cyan
+        "device": {"background": "#FF007F", "border": "#99004C"},    # Neon Pink
+        "account": {"background": "#FFD700", "border": "#998100"},   # Gold
+        "ip": {"background": "#39FF14", "border": "#22990C"}         # Lime Green
+    }
+    shape_map = {
+        "user": "dot",
+        "device": "square",
+        "account": "diamond",
+        "ip": "triangle"
+    }
     
-    for node, attrs in G_viz.nodes(data=True):
-        comm_id = attrs.get('community', 0)
-        nodes.append(Node(id=node, label=node, size=25, color=comm_colors.get(comm_id, "#3498db")))
+    for node_id, attrs in G_viz.nodes(data=True):
+        group = attrs.get('group', 'user')
+        # Highlight Devices larger as they act as Hubs for rings
+        node_size = 35 if group == "device" else 25
+        
+        nodes.append(Node(
+            id=node_id, 
+            label=node_id, 
+            size=node_size, 
+            shape=shape_map.get(group, "dot"),
+            color=color_map.get(group, {"background": "#ffffff", "border": "#cccccc"}),
+            font={"color": "white", "size": 12, "face": "courier"}
+        ))
         
     for source, target in G_viz.edges():
-        edges.append(Edge(source=source, target=target))
+        edges.append(Edge(source=source, target=target, color="#555555", width=2))
         
-    config = Config(width=800, height=600, directed=False, physics=True, hierarchical=False)
+    config = Config(
+        width="1000px", 
+        height="650px", 
+        directed=False, 
+        physics=True, 
+        hierarchical=False,
+        interaction={"hover": True}
+    )
     
     agraph(nodes=nodes, edges=edges, config=config)
 
